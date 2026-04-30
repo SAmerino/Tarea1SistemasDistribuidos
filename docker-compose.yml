@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+
+  redis:
+    image: redis:7
+    command: >
+      redis-server 
+      --maxmemory 500mb 
+      --maxmemory-policy allkeys-lru
+      --notify-keyspace-events gE
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  response:
+    build: ./GenRespuestas
+    restart: "always"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/docs"]
+      interval: 30s    
+      timeout: 10s
+      retries: 15       
+      start_period: 120s 
+    deploy:
+      resources:
+        limits:
+          memory: 4gb
+  metrics:
+    build: ./Metricas
+    restart: no
+    ports:
+      - "8002:8002"
+    environment:
+      - REDIS_HOST=redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  cache:
+    build: ./Cache
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - RESPONSE_URL=http://response:8001/compute
+      - METRICS_URL=http://metrics:8002
+    # --- AÑADE ESTO ---
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # ------------------
+    depends_on:
+      redis:
+        condition: service_healthy
+      response:
+        condition: service_healthy
+      metrics:
+        condition: service_healthy
+
+  generator:
+    build: ./GenTrafico
+    restart: no
+    depends_on:
+      cache:
+        condition: service_healthy
