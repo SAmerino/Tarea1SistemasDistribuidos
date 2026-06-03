@@ -1,11 +1,11 @@
 import time
 import random
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, HTTPException
 from src.loader import load_data
 from src import queries
 
 app = FastAPI()
-
 
 DATA = load_data("data/967_buildings.csv")
 
@@ -17,9 +17,20 @@ AREA_MAP = {
     "Z5": 20.69
 }
 
+# 0.0 = never fail, 0.3 = 30% of requests fail, 1.0 = always fail
+FAILURE_RATE = float(os.getenv("FAILURE_RATE", "0.0"))
+# Extra seconds added to every response (simulates overload/slowness)
+EXTRA_LATENCY = float(os.getenv("EXTRA_LATENCY", "0.0"))
+
 @app.post("/compute")
 def compute(req: dict):
+    if FAILURE_RATE > 0.0 and random.random() < FAILURE_RATE:
+        raise HTTPException(status_code=503, detail="Simulated failure")
+
     start = time.time()
+
+    if EXTRA_LATENCY > 0.0:
+        time.sleep(EXTRA_LATENCY)
     q = req.get("query")
 
     if q == "Q1":

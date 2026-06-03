@@ -22,8 +22,7 @@ def build_key(req):
 
 
 def handle_request(req):
-    
-    key = build_key(req) 
+    key = build_key(req)
 
     cached = get(key)
     if cached:
@@ -32,13 +31,15 @@ def handle_request(req):
         except: pass
         return {"source": "cache", "result": cached}
 
-    # MISS
-    response = requests.post(RESPONSE_URL, json=req).json()
-    result = response["result"]
-    set(key, result)
-
+    # MISS — report before calling response so it's counted even on failure
     try:
         requests.post(f"{METRICS_URL}", json={"type": "miss"})
     except: pass
 
+    response = requests.post(RESPONSE_URL, json=req, timeout=15)
+    if response.status_code != 200:
+        raise Exception(f"Response service returned {response.status_code}: {response.text[:100]}")
+
+    result = response.json()["result"]
+    set(key, result)
     return {"source": "response", "result": result}

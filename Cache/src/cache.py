@@ -12,5 +12,7 @@ def get(key):
     value = r.get(key)
     return json.loads(value) if value else None
 
-def set(key, value, ttl=60):
-    r.setex(key, ttl, json.dumps(value)) 
+CACHE_TTL = int(os.getenv("CACHE_TTL", "60"))
+
+def set(key, value, ttl=None):
+    r.setex(key, ttl if ttl is not None else CACHE_TTL, json.dumps(value))

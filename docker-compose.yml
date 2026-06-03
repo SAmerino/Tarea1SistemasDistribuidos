@@ -1,12 +1,62 @@
 version: '3.8'
 
 services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - app-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - app-network
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic consultas-principal --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic consultas-reintento --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic consultas-dlq --partitions 1 --replication-factor 1
+        echo "Topicos creados exitosamente."
+    restart: "no"
+    networks:
+      - app-network
 
   redis:
     image: redis:7
     command: >
-      redis-server 
-      --maxmemory 500mb 
+      redis-server
+      --maxmemory 500mb
       --maxmemory-policy allkeys-lru
       --notify-keyspace-events gE
     healthcheck:
@@ -14,29 +64,39 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - app-network
 
   response:
     build: ./GenRespuestas
     restart: "always"
+    environment:
+      - FAILURE_RATE=0.0
+      - EXTRA_LATENCY=0.0
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/docs"]
-      interval: 30s    
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/docs || exit 1"]
+      interval: 30s
       timeout: 10s
-      retries: 15       
-      start_period: 120s 
+      retries: 15
+      start_period: 120s
     deploy:
       resources:
         limits:
           memory: 4gb
+    networks:
+      - app-network
+
   metrics:
     build: ./Metricas
-    restart: no
+    restart: "no"
     ports:
       - "8002:8002"
+    volumes:
+      - metrics-data:/data
     environment:
       - REDIS_HOST=redis
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/docs"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/docs || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -44,6 +104,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    networks:
+      - app-network
 
   cache:
     build: ./Cache
@@ -54,14 +116,13 @@ services:
       - REDIS_HOST=redis
       - RESPONSE_URL=http://response:8001/compute
       - METRICS_URL=http://metrics:8002
-    # --- AÑADE ESTO ---
+      - CACHE_TTL=30
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/docs || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    # ------------------
     depends_on:
       redis:
         condition: service_healthy
@@ -69,10 +130,50 @@ services:
         condition: service_healthy
       metrics:
         condition: service_healthy
+    networks:
+      - app-network
+
+  consumidor:
+    build: ./ConsumidorKafka
+    restart: always
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CACHE_URL=http://cache:8000
+      - METRICS_URL=http://metrics:8002
+      - MAX_RETRIES=3
+      - RETRY_BASE=0
+      - FAILURE_THRESHOLD=3
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      cache:
+        condition: service_healthy
+      metrics:
+        condition: service_healthy
+    networks:
+      - app-network
 
   generator:
     build: ./GenTrafico
-    restart: no
+    restart: "no"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - METRICS_URL=http://metrics:8002
+      - TOTAL_MESSAGES=3000
+      - TRAFFIC_RATE=20
+      - BURST_RATE=0
+      - BURST_DURATION=30
+      - BURST_INTERVAL=90
+      - MODE=uniform
     depends_on:
-      cache:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  metrics-data:
